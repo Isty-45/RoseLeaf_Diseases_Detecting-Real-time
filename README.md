@@ -1,5 +1,3 @@
-# RoseLeaf_Diseases_Detecting-Real-time
-
 # Rose Leaf Disease Detection Streamlit App
 
 This Streamlit app deploys the trained **Disease-Semantic Patch Attention CLIP** model from the supplied notebook. It provides disease prediction, confidence scores, class probabilities, and the model's own class-conditioned patch attention heatmap.
