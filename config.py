@@ -16,9 +16,26 @@ DROPOUT = 0.20
 ALPHA_GLOBAL = 0.30
 UNFREEZE_LAST_N_VISION_BLOCKS = 1
 
-# Place your trained PyTorch weights in /models. The app checks these paths in order.
+# Preferred local path for the trained PyTorch weights.
+# The app first checks the local files below. If none is found, it downloads
+# the model from the Google Drive file ID provided here.
+MODEL_DIR = BASE_DIR / "models"
+MODEL_FILENAME = "best_dspa_clip_model.pth"
+MODEL_PATH = MODEL_DIR / MODEL_FILENAME
+
+# Google Drive model source.
+# Original link:
+# https://drive.google.com/file/d/1Zw_vejDRsMJ_KUrThXl3hqbm10rVxJzX/view?usp=drive_link
+MODEL_DRIVE_FILE_ID = "1Zw_vejDRsMJ_KUrThXl3hqbm10rVxJzX"
+MODEL_DRIVE_URL = f"https://drive.google.com/uc?id={MODEL_DRIVE_FILE_ID}"
+AUTO_DOWNLOAD_MODEL = True
+
+# The app checks these paths in order before downloading from Google Drive.
 MODEL_CANDIDATES = [
-    BASE_DIR / "models" / "best_dspa_clip_model.pth"
+    MODEL_PATH,
+    BASE_DIR / "models" / "best_text_guided_clip_model.pth",
+    BASE_DIR / "best_dspa_clip_model.pth",
+    BASE_DIR / "best_text_guided_clip_model.pth",
 ]
 
 SUPPORTED_IMAGE_TYPES = ["jpg", "jpeg", "png", "webp"]
