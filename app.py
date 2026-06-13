@@ -302,8 +302,6 @@ with right_col:
         fps=fps,
     )
 
-    st.caption(f"Model weights: `{model_path.name}` | Device: `{device}`")
-
     st.markdown(
         "<div class='right-lower-spacer'></div>",
         unsafe_allow_html=True,
