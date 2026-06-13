@@ -4,8 +4,15 @@ transformers
 numpy
 pillow
 matplotlib
-gdown
-streamlit
+streamlit>=1.39.0
+torch>=2.2.0
+torchvision>=0.17.0
+transformers>=4.44.0
+pillow>=10.0.0
+numpy>=1.26.0
+opencv-python-headless>=4.8.0
+pandas>=2.0.0
+gdown==5.2.0
 
 protobuf>=3.20.3,<4
 
