@@ -44,8 +44,10 @@ def _is_valid_model_file(path: Path) -> bool:
     try:
         with path.open("rb") as file:
             header = file.read(512).lower()
+
         if b"<html" in header or b"<!doctype html" in header:
             return False
+
     except Exception:
         return False
 
@@ -119,6 +121,10 @@ def _download_model_from_google_drive() -> Path:
 
 
 def find_model_path() -> Path:
+    """
+    Search for an existing model file.
+    If not found and AUTO_DOWNLOAD_MODEL is enabled, download it from Google Drive.
+    """
     for path in MODEL_CANDIDATES:
         if _is_valid_model_file(path):
             return path
@@ -127,6 +133,7 @@ def find_model_path() -> Path:
         return _download_model_from_google_drive()
 
     candidate_list = "\n".join(f"- {p}" for p in MODEL_CANDIDATES)
+
     raise FileNotFoundError(
         "Trained model weights were not found. Place your .pth file in one of these locations:\n"
         f"{candidate_list}"
@@ -153,7 +160,6 @@ def _clean_state_dict(checkpoint) -> Dict[str, torch.Tensor]:
         )
 
     cleaned = {}
-
     removed_profile_keys = 0
 
     for key, value in checkpoint.items():
@@ -161,11 +167,11 @@ def _clean_state_dict(checkpoint) -> Dict[str, torch.Tensor]:
         if key.startswith("module."):
             key = key.replace("module.", "", 1)
 
-        # Remove accidental wrapper prefix if checkpoint was saved from model wrapper
+        # Remove accidental wrapper prefix if checkpoint was saved from a model wrapper
         if key.startswith("model."):
             key = key.replace("model.", "", 1)
 
-        # Remove FLOPs/profiling keys inserted by THOP or similar tools
+        # Remove FLOPs/profiling keys inserted by THOP or similar profiling tools
         if (
             key == "total_ops"
             or key == "total_params"
@@ -183,21 +189,23 @@ def _clean_state_dict(checkpoint) -> Dict[str, torch.Tensor]:
 
 
 def _load_checkpoint(model_path: Path, device: torch.device):
+    """
+    Load the PyTorch checkpoint.
+
+    Some PyTorch versions support weights_only, while older versions do not.
+    This keeps the app compatible across local and Streamlit environments.
+    """
     try:
-    model.load_state_dict(state_dict, strict=True)
-except RuntimeError as exc:
-    error_message = str(exc)
-
-    if "total_ops" in error_message or "total_params" in error_message:
-        raise RuntimeError(
-            "The checkpoint still contains profiling keys such as total_ops or total_params. "
-            "Please make sure _clean_state_dict() has been replaced with the corrected version."
-        ) from exc
-
-    raise
+        return torch.load(model_path, map_location=device, weights_only=False)
+    except TypeError:
+        return torch.load(model_path, map_location=device)
 
 
 def load_model_bundle() -> Tuple[DiseaseSemanticPatchAttentionCLIP, CLIPProcessor, torch.device, Path]:
+    """
+    Load CLIP, build text prototypes, initialize the proposed model,
+    load trained weights, and return the full inference bundle.
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     clip_model = CLIPModel.from_pretrained(CLIP_MODEL_NAME).to(device)
@@ -224,32 +232,64 @@ def load_model_bundle() -> Tuple[DiseaseSemanticPatchAttentionCLIP, CLIPProcesso
     checkpoint = _load_checkpoint(model_path, device)
     state_dict = _clean_state_dict(checkpoint)
 
-    model.load_state_dict(state_dict, strict=True)
+    try:
+        model.load_state_dict(state_dict, strict=True)
+
+    except RuntimeError as exc:
+        error_message = str(exc)
+
+        if "total_ops" in error_message or "total_params" in error_message:
+            raise RuntimeError(
+                "The checkpoint still contains profiling keys such as total_ops or total_params. "
+                "The _clean_state_dict() function did not remove them correctly. "
+                "Please check that the profiling-key removal condition is present."
+            ) from exc
+
+        raise
+
     model.eval()
 
     return model, processor, device, model_path
 
 
 def prepare_image(image: Image.Image) -> Image.Image:
+    """
+    Convert uploaded/camera image into a clean RGB PIL image.
+    """
     image = ImageOps.exif_transpose(image).convert("RGB")
     return image
 
 
-def preprocess_for_clip(image: Image.Image, processor: CLIPProcessor, device: torch.device) -> torch.Tensor:
+def preprocess_for_clip(
+    image: Image.Image,
+    processor: CLIPProcessor,
+    device: torch.device,
+) -> torch.Tensor:
+    """
+    Preprocess image using the same CLIP processor used during training.
+    """
     processed = processor(images=image, return_tensors="pt")
     return processed["pixel_values"].to(device)
 
 
 def _normalize_map(attn_map: np.ndarray) -> np.ndarray:
+    """
+    Normalize attention map to the range [0, 1].
+    """
     denom = float(attn_map.max() - attn_map.min())
+
     if denom < 1e-8:
         return np.zeros_like(attn_map, dtype=np.float32)
+
     return ((attn_map - attn_map.min()) / (denom + 1e-8)).astype(np.float32)
 
 
-def build_attention_visuals(image: Image.Image, attention_vector: np.ndarray) -> Dict[str, np.ndarray]:
+def build_attention_visuals(
+    image: Image.Image,
+    attention_vector: np.ndarray,
+) -> Dict[str, np.ndarray]:
     """
-    Convert 49 patch attention weights into:
+    Convert patch attention weights into:
     1. resized attention map
     2. colored heatmap
     3. heatmap overlay on the original image
@@ -262,7 +302,10 @@ def build_attention_visuals(image: Image.Image, attention_vector: np.ndarray) ->
             f"Cannot reshape {n_patches} attention weights into a square patch grid."
         )
 
-    rgb = np.array(image.resize((IMAGE_SIZE, IMAGE_SIZE)), dtype=np.float32) / 255.0
+    rgb = np.array(
+        image.resize((IMAGE_SIZE, IMAGE_SIZE)),
+        dtype=np.float32,
+    ) / 255.0
 
     attn_map = attention_vector.reshape(grid_size, grid_size)
     attn_map = _normalize_map(attn_map)
@@ -277,9 +320,17 @@ def build_attention_visuals(image: Image.Image, attention_vector: np.ndarray) ->
         np.uint8(255 * attn_resized),
         cv2.COLORMAP_JET,
     )
-    heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
 
-    overlay = np.clip(0.60 * rgb + 0.40 * heatmap, 0, 1)
+    heatmap = cv2.cvtColor(
+        heatmap,
+        cv2.COLOR_BGR2RGB,
+    ).astype(np.float32) / 255.0
+
+    overlay = np.clip(
+        0.60 * rgb + 0.40 * heatmap,
+        0,
+        1,
+    )
 
     return {
         "original": np.uint8(255 * rgb),
@@ -297,6 +348,9 @@ def predict_image(
     device: torch.device,
     class_names: List[str] = CLASS_NAMES,
 ) -> Dict:
+    """
+    Run disease prediction and generate class-conditioned attention visualization.
+    """
     image = prepare_image(image)
     pixel_values = preprocess_for_clip(image, processor, device)
 
