@@ -1,7 +1,6 @@
 import time
 from io import BytesIO
 
-import pandas as pd
 import streamlit as st
 from PIL import Image
 
@@ -77,6 +76,17 @@ st.markdown(
         color: #166534;
         font-size: 0.78rem;
         font-weight: 500;
+    }
+
+    .section-spacer {
+        height: 2.6rem;
+    }
+
+    .field-label {
+        font-size: 0.92rem;
+        font-weight: 600;
+        color: #0f172a;
+        margin-bottom: 0.35rem;
     }
 
     div[data-testid="stProgress"] > div > div > div > div {
@@ -164,23 +174,31 @@ image = None
 with left_col:
     st.subheader("Input")
 
-    input_mode = st.radio(
-        "Choose image source",
-        ["Upload image", "Camera snapshot"],
-        horizontal=True,
-        label_visibility="collapsed",
-    )
+    source_col, widget_col = st.columns([0.42, 0.58], gap="medium")
 
-    image_source = None
-
-    if input_mode == "Upload image":
-        image_source = st.file_uploader(
-            "Upload a rose leaf image",
-            type=SUPPORTED_IMAGE_TYPES,
-            accept_multiple_files=False,
+    with source_col:
+        st.markdown("<div class='field-label'>Image source</div>", unsafe_allow_html=True)
+        input_mode = st.radio(
+            "Choose image source",
+            ["Upload image", "Camera snapshot"],
+            label_visibility="collapsed",
         )
-    else:
-        image_source = st.camera_input("Capture a rose leaf image")
+
+    with widget_col:
+        if input_mode == "Upload image":
+            st.markdown("<div class='field-label'>Upload image</div>", unsafe_allow_html=True)
+            image_source = st.file_uploader(
+                "Upload a rose leaf image",
+                type=SUPPORTED_IMAGE_TYPES,
+                accept_multiple_files=False,
+                label_visibility="collapsed",
+            )
+        else:
+            st.markdown("<div class='field-label'>Camera snapshot</div>", unsafe_allow_html=True)
+            image_source = st.camera_input(
+                "Capture a rose leaf image",
+                label_visibility="collapsed",
+            )
 
     st.markdown(
         "<div class='small-note'>The prediction starts automatically after an image is provided.</div>",
@@ -202,12 +220,12 @@ with left_col:
 
 if image is None:
     with right_col:
+        st.markdown("<div class='section-spacer'></div>", unsafe_allow_html=True)
         st.subheader("Attention visualization")
         st.info(
             "Upload or capture a leaf image to view the predicted disease, "
             "confidence, probabilities, and attention overlay."
         )
-
     st.stop()
 
 
@@ -245,6 +263,7 @@ with left_col:
 
 
 with right_col:
+    st.markdown("<div class='section-spacer'></div>", unsafe_allow_html=True)
     st.subheader("Attention visualization")
 
     st.caption(f"Model weights: `{model_path.name}` | Device: `{device}`")
@@ -286,7 +305,6 @@ with right_col:
 
     with note_col:
         st.markdown("**Interpretation note**")
-
         st.markdown(
             f"""
             <div class='small-note'>
@@ -297,26 +315,4 @@ with right_col:
             </div>
             """,
             unsafe_allow_html=True,
-        )
-
-        st.markdown(
-            """
-            <div class='small-note'>
-                <br>
-                This interface visualizes the same class-conditioned patch attention used by the model,
-                so it is more aligned with the proposed method than a generic post-hoc Grad-CAM section.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    prob_df = pd.DataFrame(result["probabilities"])
-    prob_df["Probability (%)"] = (prob_df["Probability"] * 100).round(2)
-    prob_df = prob_df.drop(columns=["Probability"])
-
-    with st.expander("Probability table", expanded=False):
-        st.dataframe(
-            prob_df,
-            use_container_width=True,
-            hide_index=True,
         )
