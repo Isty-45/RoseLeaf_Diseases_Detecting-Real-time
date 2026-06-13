@@ -135,7 +135,11 @@ def find_model_path() -> Path:
 
 def _clean_state_dict(checkpoint) -> Dict[str, torch.Tensor]:
     """
-    Handle checkpoints saved either as raw state_dict or nested checkpoint dictionaries.
+    Handle checkpoints saved either as a raw state_dict or as a nested checkpoint dictionary.
+
+    Also removes non-model profiling buffers such as total_ops and total_params.
+    These keys are commonly inserted by FLOPs/profiling tools like THOP and should
+    not be loaded into the deployed model.
     """
     if isinstance(checkpoint, dict):
         if "model_state_dict" in checkpoint:
@@ -149,23 +153,48 @@ def _clean_state_dict(checkpoint) -> Dict[str, torch.Tensor]:
         )
 
     cleaned = {}
+
+    removed_profile_keys = 0
+
     for key, value in checkpoint.items():
+        # Remove DataParallel prefix if the model was trained using nn.DataParallel
         if key.startswith("module."):
             key = key.replace("module.", "", 1)
+
+        # Remove accidental wrapper prefix if checkpoint was saved from model wrapper
+        if key.startswith("model."):
+            key = key.replace("model.", "", 1)
+
+        # Remove FLOPs/profiling keys inserted by THOP or similar tools
+        if (
+            key == "total_ops"
+            or key == "total_params"
+            or key.endswith(".total_ops")
+            or key.endswith(".total_params")
+        ):
+            removed_profile_keys += 1
+            continue
+
         cleaned[key] = value
+
+    print(f"Removed {removed_profile_keys} profiling keys from checkpoint.")
 
     return cleaned
 
 
 def _load_checkpoint(model_path: Path, device: torch.device):
-    """
-    PyTorch versions differ in the supported arguments of torch.load.
-    This keeps the app compatible across local and Streamlit environments.
-    """
     try:
-        return torch.load(model_path, map_location=device, weights_only=False)
-    except TypeError:
-        return torch.load(model_path, map_location=device)
+    model.load_state_dict(state_dict, strict=True)
+except RuntimeError as exc:
+    error_message = str(exc)
+
+    if "total_ops" in error_message or "total_params" in error_message:
+        raise RuntimeError(
+            "The checkpoint still contains profiling keys such as total_ops or total_params. "
+            "Please make sure _clean_state_dict() has been replaced with the corrected version."
+        ) from exc
+
+    raise
 
 
 def load_model_bundle() -> Tuple[DiseaseSemanticPatchAttentionCLIP, CLIPProcessor, torch.device, Path]:
