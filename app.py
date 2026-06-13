@@ -4,7 +4,7 @@ from io import BytesIO
 import streamlit as st
 from PIL import Image
 
-from config import APP_SUBTITLE, APP_TITLE, CLASS_NAMES, SUPPORTED_IMAGE_TYPES
+from config import APP_SUBTITLE, APP_TITLE, SUPPORTED_IMAGE_TYPES
 from src.inference import load_model_bundle, predict_image
 from src.utils import DISEASE_NOTES
 
@@ -16,6 +16,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+
 st.markdown(
     """
     <style>
@@ -25,20 +26,27 @@ st.markdown(
         max-width: 1500px;
     }
 
+    .title-wrap {
+        padding-bottom: 0.35rem;
+    }
+
     .small-note {
         font-size: 0.92rem;
         color: #475569;
         line-height: 1.45;
     }
 
-    .title-wrap {
-        padding-bottom: 0.25rem;
+    .field-label {
+        font-size: 0.92rem;
+        font-weight: 600;
+        color: #0f172a;
+        margin-bottom: 0.35rem;
     }
 
-    .prediction-title {
-        margin-top: 1.15rem;
+    .section-title {
+        margin-top: 0.15rem;
         margin-bottom: 0.75rem;
-        font-size: 1.15rem;
+        font-size: 1.35rem;
         font-weight: 700;
         color: #0f172a;
     }
@@ -47,20 +55,20 @@ st.markdown(
         background: #f8fafc;
         border: 1px solid #e2e8f0;
         border-radius: 14px;
-        padding: 14px 12px;
-        min-height: 108px;
+        padding: 16px 14px;
+        min-height: 116px;
         box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
     }
 
     .metric-label {
-        font-size: 0.80rem;
+        font-size: 0.88rem;
         color: #334155;
         margin-bottom: 8px;
         line-height: 1.2;
     }
 
     .metric-value {
-        font-size: 1.45rem;
+        font-size: 1.75rem;
         font-weight: 500;
         color: #0f172a;
         line-height: 1.15;
@@ -69,24 +77,25 @@ st.markdown(
 
     .metric-fps {
         display: inline-block;
-        margin-top: 7px;
+        margin-top: 8px;
         padding: 3px 8px;
         border-radius: 999px;
         background: #dcfce7;
         color: #166534;
-        font-size: 0.78rem;
+        font-size: 0.82rem;
         font-weight: 500;
     }
 
-    .section-spacer {
-        height: 2.6rem;
+    .image-spacer {
+        height: 0.4rem;
     }
 
-    .field-label {
-        font-size: 0.92rem;
-        font-weight: 600;
-        color: #0f172a;
-        margin-bottom: 0.35rem;
+    .probability-section {
+        margin-top: 1.1rem;
+    }
+
+    .right-lower-spacer {
+        height: 0.15rem;
     }
 
     div[data-testid="stProgress"] > div > div > div > div {
@@ -110,11 +119,11 @@ def open_uploaded_image(uploaded_file) -> Image.Image:
 
 def show_prediction_cards(result, inference_ms, fps):
     st.markdown(
-        "<div class='prediction-title'>Prediction and attention visualization</div>",
+        "<div class='section-title'>Prediction and attention visualization</div>",
         unsafe_allow_html=True,
     )
 
-    metric_1, metric_2, metric_3 = st.columns(3, gap="small")
+    metric_1, metric_2, metric_3 = st.columns(3, gap="medium")
 
     with metric_1:
         st.markdown(
@@ -156,45 +165,62 @@ st.markdown(
     <div class='title-wrap'>
       <h1 style='margin-bottom:0'>🌹 {APP_TITLE}</h1>
       <p style='margin-top:0.25rem; color:#475569'>
-        {APP_SUBTITLE} with class-conditioned attention heatmap
+        {APP_SUBTITLE} with attention heatmap
       </p>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
+
 left_col, right_col = st.columns(
-    [0.42, 0.58],
+    [0.40, 0.60],
     gap="large",
     vertical_alignment="top",
 )
 
 image = None
 
+
 with left_col:
-    st.subheader("Input")
+    input_source_col, upload_col = st.columns(
+        [0.38, 0.62],
+        gap="medium",
+        vertical_alignment="top",
+    )
 
-    source_col, widget_col = st.columns([0.42, 0.58], gap="medium")
+    with input_source_col:
+        st.markdown(
+            "<div class='field-label'>Image source</div>",
+            unsafe_allow_html=True,
+        )
 
-    with source_col:
-        st.markdown("<div class='field-label'>Image source</div>", unsafe_allow_html=True)
         input_mode = st.radio(
             "Choose image source",
             ["Upload image", "Camera snapshot"],
             label_visibility="collapsed",
         )
 
-    with widget_col:
+    with upload_col:
         if input_mode == "Upload image":
-            st.markdown("<div class='field-label'>Upload image</div>", unsafe_allow_html=True)
+            st.markdown(
+                "<div class='field-label'>Upload image</div>",
+                unsafe_allow_html=True,
+            )
+
             image_source = st.file_uploader(
                 "Upload a rose leaf image",
                 type=SUPPORTED_IMAGE_TYPES,
                 accept_multiple_files=False,
                 label_visibility="collapsed",
             )
+
         else:
-            st.markdown("<div class='field-label'>Camera snapshot</div>", unsafe_allow_html=True)
+            st.markdown(
+                "<div class='field-label'>Camera snapshot</div>",
+                unsafe_allow_html=True,
+            )
+
             image_source = st.camera_input(
                 "Capture a rose leaf image",
                 label_visibility="collapsed",
@@ -208,11 +234,18 @@ with left_col:
     if image_source is not None:
         try:
             image = open_uploaded_image(image_source)
+
+            st.markdown(
+                "<div class='image-spacer'></div>",
+                unsafe_allow_html=True,
+            )
+
             st.image(
                 image,
                 caption="Selected input image",
                 use_container_width=True,
             )
+
         except Exception as exc:
             st.error(f"Could not read the image: {exc}")
             image = None
@@ -220,12 +253,16 @@ with left_col:
 
 if image is None:
     with right_col:
-        st.markdown("<div class='section-spacer'></div>", unsafe_allow_html=True)
-        st.subheader("Attention visualization")
+        st.markdown(
+            "<div class='section-title'>Prediction and attention visualization</div>",
+            unsafe_allow_html=True,
+        )
+
         st.info(
             "Upload or capture a leaf image to view the predicted disease, "
-            "confidence, probabilities, and attention overlay."
+            "confidence, class probabilities, and attention overlay."
         )
+
     st.stop()
 
 
@@ -239,6 +276,7 @@ try:
             inference_ms = (time.perf_counter() - start) * 1000.0
             fps = 1000.0 / inference_ms if inference_ms > 0 else 0.0
 
+
 except FileNotFoundError as exc:
     with right_col:
         st.error(str(exc))
@@ -246,27 +284,30 @@ except FileNotFoundError as exc:
             "Place your trained notebook weight file, for example "
             "`best_dspa_clip_model.pth`, inside the `models/` folder and rerun the app."
         )
+
     st.stop()
+
 
 except Exception as exc:
     with right_col:
         st.exception(exc)
+
     st.stop()
 
 
-with left_col:
+with right_col:
     show_prediction_cards(
         result=result,
         inference_ms=inference_ms,
         fps=fps,
     )
 
-
-with right_col:
-    st.markdown("<div class='section-spacer'></div>", unsafe_allow_html=True)
-    st.subheader("Attention visualization")
-
     st.caption(f"Model weights: `{model_path.name}` | Device: `{device}`")
+
+    st.markdown(
+        "<div class='right-lower-spacer'></div>",
+        unsafe_allow_html=True,
+    )
 
     viz_col_1, viz_col_2 = st.columns(
         2,
@@ -288,31 +329,31 @@ with right_col:
             use_container_width=True,
         )
 
-    prob_col, note_col = st.columns(
-        [0.52, 0.48],
-        gap="medium",
-        vertical_alignment="top",
+    st.markdown("**Interpretation note**")
+
+    st.markdown(
+        f"""
+        <div class='small-note'>
+            {DISEASE_NOTES.get(
+                result['pred_label'],
+                'Review the attention overlay before making a final decision.'
+            )}
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    with prob_col:
-        st.markdown("**Class probabilities**")
 
-        for row in result["probabilities"]:
-            st.progress(
-                min(max(row["Probability"], 0.0), 1.0),
-                text=f"{row['Class']}: {row['Probability'] * 100:.2f}%",
-            )
+with left_col:
+    st.markdown(
+        "<div class='probability-section'></div>",
+        unsafe_allow_html=True,
+    )
 
-    with note_col:
-        st.markdown("**Interpretation note**")
-        st.markdown(
-            f"""
-            <div class='small-note'>
-                {DISEASE_NOTES.get(
-                    result['pred_label'],
-                    'Review the attention overlay before making a final decision.'
-                )}
-            </div>
-            """,
-            unsafe_allow_html=True,
+    st.markdown("**Class probabilities**")
+
+    for row in result["probabilities"]:
+        st.progress(
+            min(max(row["Probability"], 0.0), 1.0),
+            text=f"{row['Class']}: {row['Probability'] * 100:.2f}%",
         )
