@@ -26,9 +26,47 @@ from prompts import TEXT_PROMPTS
 from src.model import DiseaseSemanticPatchAttentionCLIP, build_prompt_ensemble_prototypes
 
 
+MIN_EXPECTED_MODEL_BYTES = 1_000_000
+
+
+def _is_valid_model_file(path: Path) -> bool:
+    """
+    Check whether a candidate file is likely to be a real PyTorch checkpoint.
+    This prevents the app from trying to load an incomplete Google Drive download
+    or an HTML error page as a .pth file.
+    """
+    if not path.exists() or not path.is_file():
+        return False
+
+    if path.stat().st_size < MIN_EXPECTED_MODEL_BYTES:
+        return False
+
+    try:
+        with path.open("rb") as file:
+            header = file.read(512).lower()
+        if b"<html" in header or b"<!doctype html" in header:
+            return False
+    except Exception:
+        return False
+
+    return True
+
+
 def _download_model_from_google_drive() -> Path:
-    """Download the trained model from Google Drive when it is not present locally."""
+    """
+    Download the trained model from Google Drive when it is not present locally.
+
+    Important:
+    The Google Drive file must be shared as:
+    Anyone with the link -> Viewer
+    """
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    if MODEL_PATH.exists() and not _is_valid_model_file(MODEL_PATH):
+        try:
+            MODEL_PATH.unlink()
+        except Exception:
+            pass
 
     try:
         import gdown
@@ -36,22 +74,45 @@ def _download_model_from_google_drive() -> Path:
         raise ImportError(
             "The model file is missing and gdown is not installed. "
             "Install dependencies with `pip install -r requirements.txt`, "
-            "or place the model manually at: "
-            f"{MODEL_PATH}"
+            f"or place the model manually at: {MODEL_PATH}"
         ) from exc
 
-    downloaded_path = gdown.download(
-        id=MODEL_DRIVE_FILE_ID,
-        output=str(MODEL_PATH),
-        quiet=False,
-        fuzzy=False,
-    )
+    direct_url = f"https://drive.google.com/uc?export=download&id={MODEL_DRIVE_FILE_ID}"
 
-    if downloaded_path is None or not MODEL_PATH.exists() or MODEL_PATH.stat().st_size == 0:
+    downloaded_path = None
+
+    try:
+        downloaded_path = gdown.download(
+            id=MODEL_DRIVE_FILE_ID,
+            output=str(MODEL_PATH),
+            quiet=False,
+        )
+    except TypeError:
+        downloaded_path = gdown.download(
+            url=direct_url,
+            output=str(MODEL_PATH),
+            quiet=False,
+        )
+    except Exception:
+        downloaded_path = gdown.download(
+            url=direct_url,
+            output=str(MODEL_PATH),
+            quiet=False,
+        )
+
+    if downloaded_path is None:
         raise FileNotFoundError(
-            "Automatic model download failed. Make sure the Google Drive file is shared as "
-            "'Anyone with the link can view'. You can also download it manually from: "
-            f"{MODEL_DRIVE_URL} and place it at {MODEL_PATH}"
+            "Automatic model download failed. The Google Drive file may not be publicly accessible. "
+            "Set the model file permission to 'Anyone with the link can view'. "
+            f"Drive URL: {MODEL_DRIVE_URL}"
+        )
+
+    if not _is_valid_model_file(MODEL_PATH):
+        raise FileNotFoundError(
+            "The model file was downloaded, but it does not look like a valid PyTorch checkpoint. "
+            "This usually happens when Google Drive returns an access-denied HTML page instead of the real .pth file. "
+            "Please make sure the Drive file is shared as 'Anyone with the link can view'. "
+            f"Expected path: {MODEL_PATH}"
         )
 
     return MODEL_PATH
@@ -59,7 +120,7 @@ def _download_model_from_google_drive() -> Path:
 
 def find_model_path() -> Path:
     for path in MODEL_CANDIDATES:
-        if path.exists() and path.stat().st_size > 0:
+        if _is_valid_model_file(path):
             return path
 
     if AUTO_DOWNLOAD_MODEL:
@@ -72,17 +133,39 @@ def find_model_path() -> Path:
     )
 
 
-def _clean_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-    """Handle checkpoints saved either as raw state_dict or nested dictionaries."""
-    if "model_state_dict" in state_dict:
-        state_dict = state_dict["model_state_dict"]
-    elif "state_dict" in state_dict:
-        state_dict = state_dict["state_dict"]
+def _clean_state_dict(checkpoint) -> Dict[str, torch.Tensor]:
+    """
+    Handle checkpoints saved either as raw state_dict or nested checkpoint dictionaries.
+    """
+    if isinstance(checkpoint, dict):
+        if "model_state_dict" in checkpoint:
+            checkpoint = checkpoint["model_state_dict"]
+        elif "state_dict" in checkpoint:
+            checkpoint = checkpoint["state_dict"]
+
+    if not isinstance(checkpoint, dict):
+        raise TypeError(
+            "The loaded checkpoint is not a valid state_dict or checkpoint dictionary."
+        )
 
     cleaned = {}
-    for key, value in state_dict.items():
-        cleaned[key.replace("module.", "", 1) if key.startswith("module.") else key] = value
+    for key, value in checkpoint.items():
+        if key.startswith("module."):
+            key = key.replace("module.", "", 1)
+        cleaned[key] = value
+
     return cleaned
+
+
+def _load_checkpoint(model_path: Path, device: torch.device):
+    """
+    PyTorch versions differ in the supported arguments of torch.load.
+    This keeps the app compatible across local and Streamlit environments.
+    """
+    try:
+        return torch.load(model_path, map_location=device, weights_only=False)
+    except TypeError:
+        return torch.load(model_path, map_location=device)
 
 
 def load_model_bundle() -> Tuple[DiseaseSemanticPatchAttentionCLIP, CLIPProcessor, torch.device, Path]:
@@ -109,8 +192,9 @@ def load_model_bundle() -> Tuple[DiseaseSemanticPatchAttentionCLIP, CLIPProcesso
     ).to(device)
 
     model_path = find_model_path()
-    checkpoint = torch.load(model_path, map_location=device)
+    checkpoint = _load_checkpoint(model_path, device)
     state_dict = _clean_state_dict(checkpoint)
+
     model.load_state_dict(state_dict, strict=True)
     model.eval()
 
@@ -135,19 +219,35 @@ def _normalize_map(attn_map: np.ndarray) -> np.ndarray:
 
 
 def build_attention_visuals(image: Image.Image, attention_vector: np.ndarray) -> Dict[str, np.ndarray]:
-    """Convert 49 patch weights into raw attention map, heatmap, and overlay images."""
+    """
+    Convert 49 patch attention weights into:
+    1. resized attention map
+    2. colored heatmap
+    3. heatmap overlay on the original image
+    """
     n_patches = int(attention_vector.shape[0])
     grid_size = int(np.sqrt(n_patches))
+
     if grid_size * grid_size != n_patches:
-        raise ValueError(f"Cannot reshape {n_patches} attention weights into a square patch grid.")
+        raise ValueError(
+            f"Cannot reshape {n_patches} attention weights into a square patch grid."
+        )
 
     rgb = np.array(image.resize((IMAGE_SIZE, IMAGE_SIZE)), dtype=np.float32) / 255.0
 
     attn_map = attention_vector.reshape(grid_size, grid_size)
     attn_map = _normalize_map(attn_map)
-    attn_resized = cv2.resize(attn_map, (IMAGE_SIZE, IMAGE_SIZE), interpolation=cv2.INTER_CUBIC)
 
-    heatmap = cv2.applyColorMap(np.uint8(255 * attn_resized), cv2.COLORMAP_JET)
+    attn_resized = cv2.resize(
+        attn_map,
+        (IMAGE_SIZE, IMAGE_SIZE),
+        interpolation=cv2.INTER_CUBIC,
+    )
+
+    heatmap = cv2.applyColorMap(
+        np.uint8(255 * attn_resized),
+        cv2.COLORMAP_JET,
+    )
     heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
 
     overlay = np.clip(0.60 * rgb + 0.40 * heatmap, 0, 1)
@@ -172,6 +272,7 @@ def predict_image(
     pixel_values = preprocess_for_clip(image, processor, device)
 
     output = model(pixel_values, return_attention=True)
+
     logits = output["logits"]
     probs = F.softmax(logits, dim=1)[0].detach().cpu().numpy()
 
@@ -183,10 +284,18 @@ def predict_image(
     visuals = build_attention_visuals(image, attention_vector)
 
     probability_table = [
-        {"Class": class_names[i], "Probability": float(probs[i])}
+        {
+            "Class": class_names[i],
+            "Probability": float(probs[i]),
+        }
         for i in range(len(class_names))
     ]
-    probability_table = sorted(probability_table, key=lambda row: row["Probability"], reverse=True)
+
+    probability_table = sorted(
+        probability_table,
+        key=lambda row: row["Probability"],
+        reverse=True,
+    )
 
     return {
         "pred_idx": pred_idx,
